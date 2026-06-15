@@ -1,154 +1,161 @@
 #!/usr/bin/env python3
 """
-ai-security-fence :: security-ops console renderer.
+ai-security-fence :: security-ops console renderer (monochrome).
 
-Renders the analytics payload as a dense, monospace, dark "terminal / SIEM"
-dashboard — box-drawn panels, block-character meters, green/amber/red only.
-Same payload contract as build_dashboard.py (score, kpis, coverage_bars,
-charts, repos, findings) so any scanner can target it.
+Renders the analytics payload as a dense, monospace, near-monochrome dark
+"scanner" UI: black + grayscale + a SINGLE blue accent (no green/amber/red).
+Flat hairline chrome, collapsible sections, and risk/severity-grouped
+collapsible tables. Same payload contract as build_dashboard.py.
 
 Importable: render(src_json, out_html)
 CLI:        python3 build_console.py audit.json console.html
 """
 import json, sys, html
 
-OK, WARN, BAD, MUT = "#3fb950", "#d29922", "#f85149", "#6b7785"
-SEVCOL = {"critical": BAD, "high": BAD, "medium": WARN, "low": OK, "info": MUT}
+# severity -> text brightness only (no hue); worst = brightest/heaviest
+SEV_TX = {"critical": "#ffffff", "high": "#e4ebf2", "medium": "#929ca7",
+          "low": "#646d77", "info": "#646d77"}
+SEV_MARK = {"critical": "■", "high": "■", "medium": "▪", "low": "·", "info": "·"}
 SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-GRADECOL = {"A": OK, "B": OK, "C": WARN, "D": WARN, "F": BAD}
+RISK_ORDER = ["critical", "high", "medium", "low"]
 
 
 def e(s):
     return html.escape(str(s if s is not None else ""))
 
 
-def pct_col(p):
-    return OK if p >= 75 else WARN if p >= 40 else BAD
-
-
-def meter(pct, width=16):
-    """Block-character meter -> (filled_span, empty_span)."""
+def meter(pct, width=18):
     fill = round(pct / 100 * width)
-    col = pct_col(pct)
-    return (f'<span style="color:{col}">{"█"*fill}</span>'
-            f'<span style="color:#222a35">{"░"*(width-fill)}</span>')
+    return (f'<span class="mf">{"█" * fill}</span>'
+            f'<span class="me">{"█" * (width - fill)}</span>')
 
 
-def panel(legend, body, accent=OK):
-    return (f'<section class="panel"><span class="legend" style="color:{accent}">{e(legend)}</span>'
-            f'{body}</section>')
+def section(legend, body, count=None, open_=True):
+    cnt = f'<span class="cnt">{count}</span>' if count is not None else ""
+    return (f'<section class="sec{" open" if open_ else ""}">'
+            f'<div class="sh" onclick="this.parentElement.classList.toggle(\'open\')">'
+            f'<span class="tw">▸</span><span class="sl">{e(legend)}</span>{cnt}</div>'
+            f'<div class="sb">{body}</div></section>')
 
 
 def posture(score):
     val = score.get("value", 0)
     grade = score.get("grade", "?")
-    col = GRADECOL.get(grade, MUT)
-    bar = meter(val, 24)
-    return (f'<div class="posture"><span class="pk">POSTURE</span> '
-            f'<span class="pbar">[{bar}]</span> '
-            f'<span class="pv" style="color:{col}">{val}</span><span class="pmax">/100</span> '
-            f'<span class="grade" style="border-color:{col};color:{col}">GRADE {e(grade)}</span> '
-            f'<span class="plabel" style="color:{col}">{e(score.get("label",""))}</span></div>')
+    return (f'<div class="posture"><span class="pk">POSTURE</span>'
+            f'<span class="pbar">[{meter(val, 26)}]</span>'
+            f'<span class="pv">{val}</span><span class="pmax">/100</span>'
+            f'<span class="grade">GRADE {e(grade)}</span>'
+            f'<span class="plabel">{e(score.get("label",""))}</span></div>')
 
 
 def stat_line(kpis):
     parts = []
     for k in kpis:
-        tone = {"ok": OK, "warn": WARN, "bad": BAD}.get(k.get("tone", ""), "#c9d3df")
         key = e(k.get("label", "")).lower().replace(" ", "-")
-        parts.append(f'<span class="st"><span class="sk">{key}:</span>'
-                     f'<span style="color:{tone}">{e(k.get("value",""))}</span></span>')
-    return '<div class="stats">' + "  ".join(parts) + "</div>"
+        strong = k.get("tone") in ("warn", "bad")
+        cls = "sv hot" if strong else "sv"
+        parts.append(f'<span class="st"><span class="sk">{key}</span>'
+                     f'<span class="{cls}">{e(k.get("value",""))}</span></span>')
+    return '<div class="stats">' + "".join(parts) + "</div>"
 
 
 def coverage(bars):
     rows = []
     for b in bars:
         p = b.get("pct", 0)
-        flag = ' <span style="color:#f85149">!!</span>' if p < 40 else ""
+        flag = '<span class="lowflag">below&nbsp;baseline</span>' if p < 40 else ""
         rows.append(f'<div class="cov"><span class="cl">{e(b["label"])}</span>'
                     f'<span class="cm">{meter(p)}</span>'
-                    f'<span class="cp" style="color:{pct_col(p)}">{p:>3}%</span>'
+                    f'<span class="cp">{p:>3}%</span>'
                     f'<span class="cf">{b.get("count",0)}/{b.get("total",0)}</span>{flag}</div>')
     return "".join(rows)
 
 
-def hbars(d, colorfn):
+def hbars(d):
     if not d:
-        return '<div class="muted">no data</div>'
+        return '<div class="dim">no data</div>'
     mx = max(d.values()) or 1
     rows = []
     for k, v in sorted(d.items(), key=lambda x: -x[1]):
-        col = colorfn(k)
-        rows.append(f'<div class="hb"><span class="hbl">{e(k)}</span>'
-                    f'<span class="hbm">{meter(round(v/mx*100))}</span>'
-                    f'<span class="hbv" style="color:{col}">{v}</span></div>')
+        rows.append(f'<div class="hb"><span class="hbl">{e(k).lower()}</span>'
+                    f'<span class="hbm">{meter(round(v/mx*100), 14)}</span>'
+                    f'<span class="hbv">{v}</span></div>')
     return "".join(rows)
-
-
-def risk_dot(risk):
-    if risk in ("critical", "high"):
-        return BAD, "●"
-    if risk == "medium":
-        return WARN, "●"
-    return OK, "○"
 
 
 def cell(v):
     if v is True:
-        return f'<td class="x" data-v="2" style="color:{OK}">✓</td>'
+        return '<td class="x on" data-v="2">✓</td>'
     if v is False:
-        return f'<td class="x" data-v="0" style="color:{BAD}">✗</td>'
-    return f'<td class="x" data-v="1" style="color:#3a4452">–</td>'
+        return '<td class="x off" data-v="0">✗</td>'
+    return '<td class="x na" data-v="1">·</td>'
 
 
 def matrix(repos, owner):
     if not repos:
         return ""
-    rows = []
+    groups = {r: [] for r in RISK_ORDER}
     for r in repos:
-        risk = r.get("risk", "low")
-        rc, rd = risk_dot(risk)
-        vt = sum(r.get("open_vulns", {}).values())
-        vis = r.get("visibility", "")
-        viscol = WARN if vis == "PUBLIC" else OK
-        tag = ""
-        if r.get("archived"):
-            tag += '<span class="tg">arch</span>'
-        if r.get("fork"):
-            tag += '<span class="tg">fork</span>'
-        rows.append(f'''<tr data-risk="{risk}" data-name="{e(r.get("name","").lower())}">
+        groups.setdefault(r.get("risk", "low"), []).append(r)
+    rows = []
+    for risk in RISK_ORDER:
+        grp = groups.get(risk, [])
+        if not grp:
+            continue
+        bright = SEV_TX.get(risk, "#646d77")
+        rows.append(f'<tr class="grp open" data-g="{risk}" onclick="tg(this)">'
+                    f'<td colspan="8"><span class="tw">▸</span>'
+                    f'<span style="color:{bright}">{SEV_MARK.get(risk,"·")} {risk.upper()}</span>'
+                    f'<span class="gc">{len(grp)}</span></td></tr>')
+        for r in grp:
+            vt = sum(r.get("open_vulns", {}).values())
+            vis = r.get("visibility", "").lower()
+            tag = ""
+            if r.get("archived"):
+                tag += '<span class="tg">arch</span>'
+            if r.get("fork"):
+                tag += '<span class="tg">fork</span>'
+            rows.append(f'''<tr class="r" data-g="{risk}" data-name="{e(r.get("name","").lower())}">
 <td class="rn"><a href="https://github.com/{e(owner)}/{e(r.get("name",""))}" target="_blank" rel="noopener">{e(r.get("name",""))}</a>{tag}</td>
-<td data-v="{0 if vis=="PUBLIC" else 2}" style="color:{viscol}">{e(vis.lower())}</td>
+<td class="{'pub' if vis=='public' else 'dim'}">{e(vis)}</td>
 {cell(r.get("secret_scanning"))}{cell(r.get("push_protection"))}{cell(r.get("branch_protection"))}{cell(r.get("vuln_alerts"))}
-<td class="x" data-v="{vt}" style="color:{BAD if vt else MUT}">{vt}</td>
-<td data-v="{4-SEV_ORDER.get(risk,3)}"><span style="color:{rc}">{rd} {risk.upper()}</span></td></tr>''')
-    return f'''<div class="mbar"><input id="mq" placeholder="grep repos…">
-<span class="mf-wrap"><button class="mf on" data-r="all">all</button><button class="mf" data-r="high">high</button><button class="mf" data-r="medium">med</button><button class="mf" data-r="low">low</button></span></div>
+<td class="x {'hot' if vt else 'na'}">{vt}</td>
+<td><span class="rsk" style="color:{SEV_TX.get(risk,'#646d77')}">{SEV_MARK.get(risk,'·')} {risk.upper()}</span></td></tr>''')
+    return f'''<div class="mbar"><input id="mq" placeholder="grep repository name…"></div>
 <div class="twrap"><table id="mtx"><thead><tr>
-<th data-i="0">repository</th><th data-i="1">vis</th><th data-i="2" title="secret scanning">ss</th><th data-i="3" title="push protection">pp</th><th data-i="4" title="branch protection">bp</th><th data-i="5" title="vuln alerts">va</th><th data-i="6" title="open vulns">cve</th><th data-i="7">risk</th>
+<th>repository</th><th>vis</th><th title="secret scanning">ss</th><th title="push protection">pp</th><th title="branch protection">bp</th><th title="vuln alerts">va</th><th title="open vulns">cve</th><th>risk</th>
 </tr></thead><tbody>{"".join(rows)}</tbody></table></div>
-<div class="hint">ss·secret-scan  pp·push-prot  bp·branch-prot  va·vuln-alerts  ·  click header to sort</div>'''
+<div class="hint">ss secret-scan · pp push-prot · bp branch-prot · va vuln-alerts · click a group to fold</div>'''
 
 
-def findings(fs):
+def findings_grouped(fs):
     if not fs:
-        return '<div class="muted">no findings.</div>'
-    out = []
+        return '<div class="dim">no findings.</div>'
+    groups = {}
     for f in fs:
-        s = f.get("severity", "info")
-        col = SEVCOL.get(s, MUT)
-        out.append(f'''<div class="fd" data-sev="{s}">
+        groups.setdefault(f.get("severity", "info"), []).append(f)
+    out = []
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        grp = groups.get(sev, [])
+        if not grp:
+            continue
+        bright = SEV_TX.get(sev, "#646d77")
+        items = []
+        for f in grp:
+            items.append(f'''<div class="fd">
 <div class="fh" onclick="this.parentElement.classList.toggle('o')">
-<span class="sev" style="color:{col};border-color:{col}">{s.upper():>4}</span>
-<span class="fid">{e(f.get("id",""))}</span><span class="ft">{e(f.get("title",""))}</span>
-<span class="floc">{e(f.get("location",""))}</span></div>
+<span class="tw">▸</span><span class="fid">{e(f.get("id",""))}</span>
+<span class="ft">{e(f.get("title",""))}</span><span class="floc">{e(f.get("location",""))}</span></div>
 <div class="fb">
-<div class="kv"><span class="kk">impact </span>{e(f.get("impact",""))}</div>
-<div class="kv"><span class="kk">remedy </span>{e(f.get("remediation",""))}</div>
+<div class="kv"><span class="kk">impact</span><span>{e(f.get("impact",""))}</span></div>
+<div class="kv"><span class="kk">remedy</span><span>{e(f.get("remediation",""))}</span></div>
 <div class="kv"><span class="kk">evidence</span><code>{e(f.get("evidence",""))}</code></div>
-<button class="fix" data-fix="{e(f.get("fix_prompt",""))}">[ fix with claude ▸ ]</button><span class="cp2">copied ↩</span>
+<button class="fix" data-fix="{e(f.get("fix_prompt",""))}">[ fix with claude ]</button><span class="cp2">copied to clipboard</span>
 </div></div>''')
+        out.append(f'''<div class="fgrp open">
+<div class="fgh" onclick="this.parentElement.classList.toggle('open')">
+<span class="tw">▸</span><span style="color:{bright}">{SEV_MARK.get(sev,'·')} {sev.upper()}</span><span class="gc">{len(grp)}</span></div>
+<div class="fgb">{"".join(items)}</div></div>''')
     return "".join(out)
 
 
@@ -164,109 +171,129 @@ def render(src, out):
     vis = charts.get("visibility", {})
     vulns = charts.get("vulns_by_severity", {})
     has_vulns = bool(vulns) and sum(vulns.values()) > 0
-    right_title = "VULNS BY SEVERITY" if has_vulns else "FINDINGS BY SEVERITY"
-    right = hbars(vulns if has_vulns else fcounts, lambda k: SEVCOL.get(k, MUT))
-    vis_panel = hbars(vis, lambda k: WARN if k == "PUBLIC" else OK)
+    right_title = "vulns by severity" if has_vulns else "findings by severity"
+    right = hbars({k.upper(): v for k, v in (vulns if has_vulns else fcounts).items()})
+    vis_panel = hbars(vis)
     notes = "".join(f"<div>· {e(x)}</div>" for x in d.get("coverage_notes", []))
-    guides = "  ".join(e(g) for g in d.get("guidelines", []))
+    guides = "  ·  ".join(e(g) for g in d.get("guidelines", []))
 
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(d.get('title','security-fence'))}</title>
 <style>
-:root{{--bg:#0a0e14;--panel:#0c1118;--line:#1c2531;--tx:#c9d3df;--mut:{MUT};--ok:{OK};--warn:{WARN};--bad:{BAD};}}
+:root{{--bg:#0a0c0f;--panel:#0c0f13;--line:#181d23;--line2:#11151a;--tx:#cdd4db;--dim:#79828c;--faint:#49525b;
+ --acc:#4c9eff;--accdim:#21384f;--meterempty:#1b2128;}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--bg);color:var(--tx);
- font:13px/1.5 ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
- background-image:radial-gradient(circle at 50% -20%,#10161f 0,#0a0e14 60%);}}
-.wrap{{max-width:1080px;margin:0 auto;padding:22px 18px 80px}}
-.muted{{color:var(--mut)}}
-a{{color:var(--ok)}}a:hover{{text-decoration:underline}}
-.prompt{{color:var(--mut);font-size:13px;margin-bottom:4px}}
-.prompt .u{{color:var(--ok)}}.prompt .c{{color:var(--tx)}}.cursor{{background:var(--ok);color:var(--bg);animation:bl 1.1s steps(1) infinite}}
+ font:13px/1.55 ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}}
+.wrap{{max-width:1060px;margin:0 auto;padding:24px 20px 90px}}
+.dim{{color:var(--dim)}}
+a{{color:var(--acc);text-decoration:none}}a:hover{{text-decoration:underline}}
+.prompt{{color:var(--faint);font-size:13px;margin-bottom:6px}}
+.prompt .u{{color:var(--acc)}}.prompt .arg{{color:var(--dim)}}
+.cursor{{display:inline-block;width:8px;height:14px;background:var(--acc);vertical-align:-2px;animation:bl 1.1s steps(1) infinite}}
 @keyframes bl{{50%{{opacity:0}}}}
-.title{{font-size:18px;font-weight:700;letter-spacing:.5px;margin:6px 0 2px}}
-.sub{{color:var(--mut);font-size:12px;margin-bottom:6px}}.sub b{{color:var(--tx)}}
-.panel{{position:relative;border:1px solid var(--line);border-radius:4px;padding:20px 16px 15px;margin-top:20px;background:var(--panel)}}
-.legend{{position:absolute;top:-8px;left:13px;background:var(--bg);padding:0 9px;font-size:11px;letter-spacing:2px;text-transform:uppercase}}
-.posture{{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:15px}}
-.pk{{color:var(--mut);letter-spacing:2px}}.pbar{{letter-spacing:-1px}}.pv{{font-size:22px;font-weight:700}}.pmax{{color:var(--mut)}}
-.grade{{border:1px solid;border-radius:3px;padding:2px 8px;font-weight:700;font-size:12px;letter-spacing:1px}}
-.plabel{{font-weight:600}}
-.stats{{margin-top:12px;color:var(--mut);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 22px}}
-.sk{{color:var(--mut);margin-right:3px}}.st{{white-space:nowrap}}
-.cov{{display:flex;align-items:center;gap:12px;margin:7px 0;white-space:nowrap}}
-.cl{{width:210px;color:var(--tx)}}.cm{{letter-spacing:-1px}}.cp{{width:38px;text-align:right;font-weight:700}}.cf{{color:var(--mut)}}
-.cols{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}@media(max-width:720px){{.cols{{grid-template-columns:1fr}}}}
-.hb{{display:flex;align-items:center;gap:12px;margin:7px 0;white-space:nowrap}}
-.hbl{{width:96px;color:var(--tx)}}.hbm{{letter-spacing:-1px}}.hbv{{font-weight:700}}
-.mbar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}}
-#mq{{flex:1;min-width:140px;background:#070a0f;border:1px solid var(--line);color:var(--tx);border-radius:3px;padding:6px 10px;font:inherit}}
-#mq::placeholder{{color:#46505e}}
-.mf-wrap{{display:flex;gap:4px}}.mf{{background:#070a0f;border:1px solid var(--line);color:var(--mut);border-radius:3px;padding:5px 11px;cursor:pointer;font:inherit}}
-.mf.on{{border-color:var(--ok);color:var(--ok)}}
-.twrap{{overflow-x:auto;border:1px solid var(--line);border-radius:3px}}
-table{{width:100%;border-collapse:collapse;font-size:12.5px;min-width:680px}}
-thead th{{position:sticky;top:0;background:#0e141c;text-align:left;padding:9px 11px;color:var(--mut);
- font-weight:600;letter-spacing:.5px;cursor:pointer;border-bottom:1px solid var(--line);white-space:nowrap;text-transform:uppercase;font-size:11px}}
-thead th:hover{{color:var(--ok)}}
-tbody td{{padding:7px 11px;border-bottom:1px solid #141b24}}
-tbody tr:hover{{background:#0f161f}}tbody tr:last-child td{{border-bottom:0}}
-td.x{{text-align:center;font-weight:700}}.rn a{{font-weight:600}}
-.tg{{margin-left:7px;color:var(--mut);border:1px solid var(--line);border-radius:3px;padding:0 5px;font-size:10px}}
-.hint{{color:var(--mut);font-size:11px;margin-top:9px}}
-.fd{{border:1px solid var(--line);border-radius:3px;margin:7px 0;background:#0a0f16}}
-.fh{{display:flex;align-items:center;gap:11px;padding:9px 12px;cursor:pointer}}
-.sev{{border:1px solid;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;white-space:pre}}
-.fid{{color:var(--mut);font-size:11px}}.ft{{flex:1;font-weight:600}}
-.floc{{color:var(--mut);font-size:11.5px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.fb{{display:none;padding:4px 12px 13px;border-top:1px solid var(--line)}}.fd.o .fb{{display:block}}
-.kv{{display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed #141b24;align-items:baseline}}
-.kk{{color:var(--mut);width:74px;flex:none}}.kv code{{color:var(--warn);word-break:break-all}}
-.fix{{margin-top:12px;background:transparent;border:1px solid var(--ok);color:var(--ok);border-radius:3px;padding:7px 13px;cursor:pointer;font:inherit}}
-.fix:hover{{background:var(--ok);color:var(--bg)}}
-.cp2{{margin-left:10px;color:var(--ok);font-size:12px;opacity:0;transition:.2s}}.cp2.show{{opacity:1}}
-.foot{{color:var(--mut);font-size:12px;margin-top:18px;border-top:1px solid var(--line);padding-top:14px}}
-.foot .gd{{margin-top:8px;color:#52606e}}
+.title{{font-size:18px;font-weight:700;letter-spacing:.4px;margin:4px 0 2px;color:#e9eef3}}
+.sub{{color:var(--dim);font-size:12px;margin-bottom:14px}}.sub b{{color:var(--tx);font-weight:600}}
+
+.sec{{border:1px solid var(--line);border-radius:3px;margin-top:14px;background:var(--panel)}}
+.sh{{display:flex;align-items:center;gap:8px;padding:10px 13px;cursor:pointer;user-select:none}}
+.sh:hover .sl{{color:var(--tx)}}
+.sl{{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--dim)}}
+.cnt{{color:var(--faint);font-size:11px}}
+.tw{{color:var(--acc);font-size:10px;transition:transform .15s;display:inline-block}}
+.sec.open>.sh>.tw,.grp.open>td>.tw,.fgrp.open>.fgh>.tw,.fd.o>.fh>.tw{{transform:rotate(90deg)}}
+.sb{{display:none;padding:4px 14px 15px;border-top:1px solid var(--line2)}}.sec.open>.sb{{display:block}}
+
+.posture{{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:15px;padding-top:8px}}
+.pk{{color:var(--dim);letter-spacing:2px;font-size:12px}}
+.pbar .mf{{color:var(--acc)}}.pbar .me{{color:var(--meterempty)}}.pbar{{letter-spacing:-1px}}
+.pv{{font-size:22px;font-weight:700;color:#fff}}.pmax{{color:var(--faint)}}
+.grade{{border:1px solid var(--accdim);color:var(--tx);border-radius:3px;padding:2px 9px;font-weight:700;font-size:12px;letter-spacing:1px}}
+.plabel{{color:var(--dim);font-weight:600}}
+.stats{{margin-top:14px;display:flex;flex-wrap:wrap;gap:7px 26px;font-size:13px}}
+.st{{white-space:nowrap}}.sk{{color:var(--faint);margin-right:7px}}.sv{{color:var(--tx)}}.sv.hot{{color:#fff;font-weight:600}}
+
+.mf{{color:var(--acc)}}.me{{color:var(--meterempty)}}
+.cov{{display:flex;align-items:center;gap:14px;margin:8px 0;white-space:nowrap}}
+.cl{{width:220px;color:var(--tx)}}.cm{{letter-spacing:-1px;font-size:12px}}
+.cp{{width:40px;text-align:right;font-weight:700;color:var(--tx)}}.cf{{color:var(--faint)}}
+.lowflag{{color:var(--acc);font-size:11px;border:1px solid var(--accdim);border-radius:3px;padding:0 6px}}
+.cols{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}@media(max-width:720px){{.cols{{grid-template-columns:1fr}}}}
+.hb{{display:flex;align-items:center;gap:12px;margin:8px 0;white-space:nowrap}}
+.hbl{{width:90px;color:var(--dim)}}.hbm{{letter-spacing:-1px;font-size:12px}}.hbv{{font-weight:700;color:var(--tx)}}
+
+.mbar{{margin:4px 0 12px}}
+#mq{{width:100%;background:#06080b;border:1px solid var(--line);color:var(--tx);border-radius:3px;padding:8px 11px;font:inherit}}
+#mq:focus{{outline:none;border-color:var(--accdim)}}#mq::placeholder{{color:var(--faint)}}
+.twrap{{border:1px solid var(--line);border-radius:3px;overflow-x:auto}}
+table{{width:100%;border-collapse:collapse;font-size:12.5px;min-width:660px}}
+thead th{{text-align:left;padding:9px 12px;color:var(--faint);font-weight:600;letter-spacing:.5px;
+ text-transform:uppercase;font-size:11px;border-bottom:1px solid var(--line);white-space:nowrap;background:#0a0d11}}
+tbody td{{padding:7px 12px;border-bottom:1px solid var(--line2)}}
+tbody tr.r:hover{{background:#0f141a}}
+tr.grp{{cursor:pointer;user-select:none;background:#0b0e12}}tr.grp:hover td{{color:var(--tx)}}
+tr.grp td{{padding:8px 12px;border-bottom:1px solid var(--line);letter-spacing:1px;font-size:11.5px}}
+tr.grp .tw{{margin-right:8px}}.gc{{color:var(--faint);margin-left:9px}}
+td.x{{text-align:center;font-weight:700}}.x.on{{color:var(--tx)}}.x.off{{color:var(--dim)}}.x.na{{color:var(--faint)}}.x.hot{{color:#fff}}
+.rn a{{font-weight:600}}.pub{{color:var(--tx)}}
+.tg{{margin-left:8px;color:var(--faint);border:1px solid var(--line);border-radius:3px;padding:0 5px;font-size:10px}}
+.rsk{{font-size:11.5px;letter-spacing:.5px}}
+.hint{{color:var(--faint);font-size:11px;margin-top:10px}}
+
+.fgrp{{border:1px solid var(--line);border-radius:3px;margin:8px 0;background:var(--panel)}}
+.fgh{{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;user-select:none;letter-spacing:1px;font-size:12px}}
+.fgb{{display:none;padding:2px 10px 10px}}.fgrp.open>.fgb{{display:block}}
+.fd{{border:1px solid var(--line);border-radius:3px;margin:6px 0;background:#0a0d11}}
+.fh{{display:flex;align-items:center;gap:10px;padding:8px 11px;cursor:pointer}}
+.fh:hover .ft{{color:#fff}}
+.fid{{color:var(--faint);font-size:11px;min-width:52px}}.ft{{flex:1;color:var(--tx)}}
+.floc{{color:var(--faint);font-size:11.5px;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.fb{{display:none;padding:3px 12px 12px;border-top:1px solid var(--line2)}}.fd.o>.fb{{display:block}}
+.kv{{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--line2)}}
+.kk{{color:var(--faint);width:72px;flex:none;text-transform:uppercase;font-size:11px}}
+.kv code{{color:var(--acc);word-break:break-all}}
+.fix{{margin-top:12px;background:transparent;border:1px solid var(--accdim);color:var(--acc);border-radius:3px;padding:7px 14px;cursor:pointer;font:inherit}}
+.fix:hover{{background:var(--acc);color:#04070a}}
+.cp2{{margin-left:11px;color:var(--acc);font-size:12px;opacity:0;transition:.2s}}.cp2.show{{opacity:1}}
+.foot{{color:var(--faint);font-size:12px;margin-top:18px;border-top:1px solid var(--line);padding-top:14px}}
+.foot .lbl{{color:var(--dim);letter-spacing:1px}}.foot code{{color:var(--acc)}}
 </style></head><body><div class="wrap">
 
-<div class="prompt"><span class="u">{e(owner or "user")}@security-fence</span><span class="c">:~$</span> audit {e(subj)} --read-only</div>
+<div class="prompt"><span class="u">{e(owner or "user")}@security-fence</span>:~$ <span class="arg">audit {e(subj)} --read-only</span></div>
 <div class="title">{e(d.get('title','security audit'))}</div>
 <div class="sub">{e(', '.join(d.get('scope',[])))} · generated {e(d.get('generated_at',''))} · <b>read-only</b></div>
 
-<section class="panel"><span class="legend" style="color:var(--ok)">posture</span>
-  {posture(d.get('score',{}))}
-  {stat_line(d.get('kpis',[]))}
-</section>
+<section class="sec open"><div class="sh" onclick="this.parentElement.classList.toggle('open')"><span class="tw">▸</span><span class="sl">posture</span></div>
+<div class="sb">{posture(d.get('score',{}))}{stat_line(d.get('kpis',[]))}</div></section>
 
-{panel("control coverage", coverage(d.get('coverage_bars',[])), WARN)}
+{section("control coverage", coverage(d.get('coverage_bars',[])))}
 
 <div class="cols">
-  {panel("repository visibility", vis_panel)}
-  {panel(right_title.lower(), right)}
+  {section("repository visibility", vis_panel)}
+  {section(right_title, right)}
 </div>
 
-{panel("repositories", matrix(d.get('repos',[]), owner))}
+{section("repositories", matrix(d.get('repos',[]), owner), count=len(d.get('repos',[])))}
 
-{panel(f"findings · {len(fs)}", findings(fs), BAD if any(f.get('severity') in ('critical','high') for f in fs) else WARN)}
+{section("findings", findings_grouped(fs), count=len(fs))}
 
 <div class="foot">
-  <div style="color:var(--tx);letter-spacing:1px">// methodology</div>
+  <div class="lbl">// methodology</div>
   {notes}
-  <div class="gd">score = weighted control-coverage, penalised for live secret alerts + open critical/high vulns · frameworks: {guides}</div>
-  <div class="gd">[ fix with claude ▸ ] copies a remediation prompt to your clipboard · or run <code style="color:var(--ok)">/security-fence fix &lt;ID&gt;</code> · no repo or setting was modified</div>
-  <div style="margin-top:10px;color:var(--ok)">$ <span class="cursor">&nbsp;</span></div>
+  <div style="margin-top:8px">score = weighted control-coverage, penalised for live secret alerts &amp; open critical/high vulns · {guides}</div>
+  <div style="margin-top:6px">[ fix with claude ] copies a remediation prompt · or run <code>/security-fence fix &lt;ID&gt;</code> · no repo or setting was modified</div>
+  <div style="margin-top:12px"><span class="dim">$</span> <span class="cursor"></span></div>
 </div>
 </div>
 <script>
+function tg(tr){{tr.classList.toggle('open');const g=tr.dataset.g,show=tr.classList.contains('open');
+ let n=tr.nextElementSibling;while(n&&!n.classList.contains('grp')){{if(n.dataset.g===g)n.style.display=show?'':'none';n=n.nextElementSibling;}}}}
 const mq=document.getElementById('mq');
-function applyM(){{const q=mq?mq.value.toLowerCase():'';const rf=document.querySelector('.mf.on').dataset.r;
- document.querySelectorAll('#mtx tbody tr').forEach(tr=>{{tr.style.display=((tr.dataset.name.includes(q))&&(rf==='all'||tr.dataset.risk===rf||(rf==='high'&&tr.dataset.risk==='critical')))?'':'none';}});}}
-if(mq)mq.oninput=applyM;
-document.querySelectorAll('.mf').forEach(b=>b.onclick=()=>{{document.querySelectorAll('.mf').forEach(x=>x.classList.remove('on'));b.classList.add('on');applyM();}});
-document.querySelectorAll('#mtx thead th').forEach((th,i)=>{{let asc=true;th.onclick=()=>{{const tb=th.closest('table').querySelector('tbody');const rows=[...tb.rows];
- rows.sort((a,b)=>{{const av=a.cells[i].dataset.v??a.cells[i].innerText,bv=b.cells[i].dataset.v??b.cells[i].innerText;const na=parseFloat(av),nb=parseFloat(bv);
- let r=(!isNaN(na)&&!isNaN(nb))?na-nb:(''+av).localeCompare(''+bv);return asc?r:-r;}});asc=!asc;rows.forEach(r=>tb.appendChild(r));}};}});
-document.querySelectorAll('.fix').forEach(b=>b.onclick=ev=>{{ev.stopPropagation();navigator.clipboard.writeText(b.dataset.fix).then(()=>{{const m=b.nextElementSibling;m.classList.add('show');setTimeout(()=>m.classList.remove('show'),2400);}});}});
+if(mq)mq.oninput=()=>{{const q=mq.value.toLowerCase();
+ document.querySelectorAll('#mtx tbody tr.r').forEach(tr=>{{tr.style.display=tr.dataset.name.includes(q)?'':'none';}});
+ document.querySelectorAll('#mtx tbody tr.grp').forEach(g=>{{g.style.display=q?'none':'';}});}};
+document.querySelectorAll('.fix').forEach(b=>b.onclick=ev=>{{ev.stopPropagation();
+ navigator.clipboard.writeText(b.dataset.fix).then(()=>{{const m=b.nextElementSibling;m.classList.add('show');setTimeout(()=>m.classList.remove('show'),2400);}});}});
 </script></body></html>"""
     with open(out, "w") as fh:
         fh.write(page)
