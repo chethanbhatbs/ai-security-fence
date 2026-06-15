@@ -13,7 +13,7 @@ Usage:
     python3 run_scan.py --target . --out findings.json [--html report.html]
                         [--no-config-surface] [--no-engines]
 """
-import argparse, json, os, sys, datetime
+import argparse, json, os, re, sys, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -21,6 +21,35 @@ import scan_local
 import scan_engines
 
 SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+_FP = re.compile(r"fp=([0-9a-f]{6})")
+
+
+def aggregate(findings):
+    """Collapse the SAME secret value found in many places into one finding."""
+    groups, singles = {}, []
+    for f in findings:
+        m = _FP.search(f.get("evidence", ""))
+        if m and f.get("surface") in ("Local", "Secrets"):
+            groups.setdefault((f.get("title", ""), m.group(1)), []).append(f)
+        else:
+            singles.append(f)
+    out = list(singles)
+    for grp in groups.values():
+        if len(grp) == 1:
+            out.append(grp[0])
+            continue
+        grp.sort(key=lambda f: SEV_RANK.get(f.get("severity", "info"), 9))
+        locs = [g.get("location", "?") for g in grp]
+        shown = "; ".join(locs[:5]) + (f"  (+{len(locs)-5} more)" if len(locs) > 5 else "")
+        base = dict(grp[0])  # most-severe
+        base["location"] = f"{len(locs)} locations: {shown}"
+        base["impact"] = (f"The SAME secret value is hardcoded in {len(locs)} places — "
+                          "so one rotation must update all of them. ") + base.get("impact", "")
+        base["fix_prompt"] = (f"This identical secret appears in {len(locs)} files ({shown}). "
+                              "Remove it from ALL of them, replace with a single env/secret-store "
+                              "reference, and rotate the credential.")
+        out.append(base)
+    return out
 
 
 def merge(*lists):
@@ -32,6 +61,7 @@ def merge(*lists):
                 continue
             seen.add(key)
             out.append(f)
+    out = aggregate(out)
     out.sort(key=lambda f: (SEV_RANK.get(f.get("severity", "info"), 9), f.get("surface", "")))
     for i, f in enumerate(out, 1):
         f["id"] = "SEC-%03d" % i

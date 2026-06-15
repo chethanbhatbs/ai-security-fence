@@ -44,7 +44,9 @@ SIGNATURES = [
     ("azure-conn",    "critical", "Azure storage conn string", re.compile(r"AccountKey=[A-Za-z0-9+/=]{60,}")),
     ("jwt",           "medium",   "JSON Web Token",            re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     ("db-url",        "high",     "DB conn URL with password", re.compile(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:@/]+:[^\s:@/]+@[^\s/]+", re.I)),
-    ("pwd-assign",    "high",     "Hardcoded credential assignment", re.compile(r"(?i)\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\b\s*[:=]\s*[\"']?([^\s\"'#,;]{6,})")),
+    # Matches a sensitive key-NAME (as a substring of the identifier, e.g. REDASH_API_KEY,
+    # accessToken, db_password) optionally quoted (JSON), then captures the assigned value.
+    ("pwd-assign",    "high",     "Hardcoded credential assignment", re.compile(r"(?i)[\w.\-]*(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|access[_-]?token|auth[_-]?token|authorization|token|credential|client[_-]?secret|private[_-]?key)[\w.\-]*[\"']?\s*[:=]\s*[\"']?([^\s\"'#,;]{6,})")),
     ("bearer",        "medium",   "Bearer token literal",      re.compile(r"(?i)bearer\s+[A-Za-z0-9._-]{20,}")),
 ]
 
@@ -75,7 +77,11 @@ TEXT_EXT = {".md", ".json", ".txt", ".env", ".envrc", ".py", ".sh", ".yml", ".ya
             ".java", ".php", ".cs", ".properties", ".conf", ".xml", ".html", ""}
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", "env", "dist",
              "build", ".next", ".cache", "vendor", "target", ".terraform", "coverage",
-             ".pytest_cache", ".mypy_cache", "site-packages"}
+             ".pytest_cache", ".mypy_cache", "site-packages",
+             # browser-profile / engine artifacts (binary stores + caches -> pure noise)
+             "Cache", "Cache_Data", "Code Cache", "GPUCache", "DawnGraphiteCache",
+             "DawnWebGPUCache", "Service Worker", "Extensions", "chrome-debug",
+             "Local Storage", "Session Storage", "IndexedDB", "blob_storage"}
 MAX_BYTES = 800_000
 
 
@@ -87,6 +93,38 @@ def shannon(s):
         counts[c] = counts.get(c, 0) + 1
     n = len(s)
     return -sum((v / n) * math.log2(v / n) for v in counts.values())
+
+
+# Heuristics to keep the GENERIC "credential = value" detector high-precision.
+# Specific token signatures (AWS/GitHub/Slack/etc.) are high-confidence and bypass this.
+_CODE_HINT = re.compile(r"[()\[\]{}<>]|==|->|::|^[a-z_][\w]*\.[a-zA-Z_]|\b(?:os\.environ|getenv|process\.env|self\.|request\.|req\.|config\.|window\.)")
+
+
+# Paths where a generic "password=" match is most likely a seed/demo/fixture value,
+# not a real infra secret. Specific token signatures (AWS/GitHub/...) are NOT downgraded
+# here — a real cloud key in a test file is still a real cloud key.
+_TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?|fixtures?|examples?|demos?|mocks?|seeds?|samples?|e2e|stories)(/|$)|test_credentials|_test\.|\.test\.|\.spec\.|conftest\.py|backend_test\.py", re.I)
+_DATA_DUMP = re.compile(r"(^|/)(data|logs?|dumps?|traj\w*|full_traj|trajector\w*|transcripts?)(/|$)|\.log$", re.I)
+_GENERIC_LOWCONF = {"pwd-assign", "bearer", "jwt"}
+
+
+def looks_like_secret(val):
+    """True only for values that plausibly are a real secret (not code/test/placeholder)."""
+    v = val.strip().strip("'\"`")
+    low = v.lower()
+    if len(v) < 8 or low in PLACEHOLDERS:
+        return False
+    if any(w in low for w in ("your", "example", "changeme", "placeholder", "dummy", "sample", "xxxx")):
+        return False
+    if v.startswith(("<", "$", "{", "%")) or "${" in v or "%(" in v:
+        return False
+    if _CODE_HINT.search(v):
+        return False
+    if v.isalpha() or v.isdigit():          # pure word or pure number -> not a credential
+        return False
+    if re.match(r"^\d{4}-\d\d-\d\d[T ]\d\d:", v) or re.match(r"^\d+\.\d+\.\d+", v):
+        return False                         # ISO timestamp / version string, not a secret
+    return shannon(v) >= 3.2                 # favour high-entropy (random) values
 
 
 def redact(val):
@@ -137,29 +175,36 @@ class Collector:
         try:
             if os.path.getsize(path) > MAX_BYTES:
                 return
-            with open(path, "r", errors="ignore") as fh:
-                lines = fh.readlines()
+            with open(path, "rb") as fh:
+                blob = fh.read()
+            if b"\x00" in blob[:4096]:        # binary (SQLite/cache/image) -> skip
+                return
+            lines = blob.decode("utf-8", "ignore").splitlines()
         except Exception:
             return
         for ln, line in enumerate(lines, 1):
-            if len(line) > 4000:
+            if len(line) > 20000:   # skip only truly huge lines (e.g. embedded blobs)
                 continue
             for sid, sev, label, rx in SIGNATURES:
                 for m in rx.finditer(line):
                     raw = m.group(0)
                     if sid in ("pwd-assign", "aws-secret"):
                         val = m.group(m.lastindex) if m.lastindex else raw
+                        if sid == "pwd-assign" and not looks_like_secret(val):
+                            continue
                         low = val.lower().strip()
                         if low in PLACEHOLDERS or "${" in val or val.startswith("<") or "*****" in val or "your" in low:
-                            continue
-                        if sid == "pwd-assign" and shannon(val) < 2.6 and not re.search(r"[A-Z]", val) and not re.search(r"\d", val):
                             continue
                         shown = redact(val)
                     else:
                         shown = redact(raw)
                     sev2 = sev
                     note = ""
-                    if in_context and sid in ("pwd-assign", "db-url", "bearer", "jwt", "aws-secret"):
+                    if (sid in _GENERIC_LOWCONF and (_TEST_PATH.search(path) or _DATA_DUMP.search(path))) \
+                            or (sid == "db-url" and _DATA_DUMP.search(path)):
+                        sev2 = "low"
+                        note = " (found in a test/example/log path — likely a seed/demo value, not a live secret; verify before acting)"
+                    elif in_context and sid in ("pwd-assign", "db-url", "bearer", "jwt", "aws-secret"):
                         sev2 = "critical"
                         note = " — and this file is auto-loaded into EVERY AI session context, so the secret is exposed on every prompt/response"
                     d = self.disp(path)
