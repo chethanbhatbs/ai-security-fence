@@ -12,8 +12,15 @@ look) and orchestrates proven OSS scanners for the rest. Be honest about coverag
 `SKILL_DIR = directory containing this file.`
 
 Two modes:
-- **scan** (default) — audit every reachable surface, score, render the dashboard.
+- **scan** (default) — audit the requested surface(s), score, render the dashboard.
 - **fix `<FINDING-ID>`** — apply one finding's remediation (what the report's "Fix with Claude" buttons paste back).
+
+## Scope — HONOR EXACTLY WHAT THE USER ASKED FOR
+Parse the request for a surface and scan ONLY that. Do not expand scope.
+- "check GitHub" / "scan my repos" → **GitHub only** (Step G). Do NOT touch local files.
+- "scan this project" / a path → project + engines only (Step 1 with `--no-config-surface`).
+- "scan my secrets" / "audit everything" / no surface named → full scan (all steps).
+State the scope you inferred in one line before scanning.
 
 ## Hard rules
 1. **READ-ONLY scanning.** Never write, delete, POST, mutate a repo, or change a remote setting during a scan. Inventory and report only.
@@ -25,6 +32,15 @@ Two modes:
 ---
 
 ## SCAN mode
+
+### Step G — GitHub-only audit (when the user asks for GitHub)
+This is a self-contained analytics audit; do NOT run the local steps.
+```bash
+python3 "$SKILL_DIR/scripts/scan_github.py" > /tmp/sf_github.json   # add --owner ORG for an org
+python3 "$SKILL_DIR/scripts/build_dashboard.py" /tmp/sf_github.json ./github_security_audit.html
+open ./github_security_audit.html
+```
+`scan_github.py` (read-only `gh` API) pulls per-repo controls — secret scanning, push protection, branch protection, vuln alerts, open Dependabot & secret-scanning alerts, visibility — and emits a posture score, control-coverage, a repository security matrix, and risk-ranked findings. `build_dashboard.py` renders the analytics dashboard (gauge, KPIs, coverage bars, charts, sortable matrix, Fix buttons). If `gh auth status` fails, tell the user to run `gh auth login` and stop. Then report back per Step 4.
 
 ### Step 0 — refresh guidelines (fast)
 Read `reference/guidelines.md`. Optionally run ONE `WebSearch` for current-year
@@ -56,6 +72,9 @@ Append findings to the JSON for any service the user has connected. Read-only; m
 Merge by appending objects to `findings[]` (keep the schema below) and re-deriving unique IDs. Add a `coverage` line for each service you checked or skipped.
 
 ### Step 3 — render
+For a service/analytics audit (GitHub etc.) use the dashboard renderer
+`build_dashboard.py` (posture gauge, coverage, matrix). For a plain findings list
+from the local/project scan use `build_report.py`:
 ```bash
 python3 "$SKILL_DIR/scripts/build_report.py" /tmp/sf_findings.json ./security-fence-report.html
 open ./security-fence-report.html   # or xdg-open on Linux

@@ -51,8 +51,16 @@ Then in Claude Code:
 
 ```
 /security-fence              # audit current repo + local AI surface
+/security-fence check github # GitHub-only posture audit (analytics dashboard)
+/security-fence scan ./app   # a specific project only
 /security-fence fix SEC-003  # apply one finding's remediation (asks first)
 ```
+
+Scope is honored: name a surface and only that surface is scanned. The GitHub
+audit pulls real per-repo controls (secret scanning, push protection, branch
+protection, Dependabot & secret-scanning alerts, visibility) and renders a
+**posture score, control-coverage, and a sortable repository security matrix** —
+analytics, not decoration.
 
 ### Optional engines (more coverage)
 
