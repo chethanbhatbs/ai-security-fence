@@ -1,0 +1,24 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile (syntax check)
+        run: python3 -m py_compile skill/security-fence/scripts/*.py
+      - name: Planted-secret smoke test
+        run: |
+          T=$(mktemp -d)
+          printf 'OPENAI_API_KEY=sk-proj-ABCD1234efgh5678IJKL9012mnop3456\n' > "$T/.env"
+          python3 skill/security-fence/scripts/run_scan.py --target "$T" \
+            --no-config-surface --no-engines --out "$T/out.json" --html "$T/r.html"
+          python3 - "$T/out.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert any(f["severity"]=="critical" for f in d["findings"]), "expected a critical finding"
+          print("OK:", len(d["findings"]), "findings")
+          PY

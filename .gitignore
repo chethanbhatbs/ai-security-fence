@@ -1,0 +1,17 @@
+# Never commit scan output — it lists secret locations
+*findings*.json
+*security-fence-report*.html
+report.html
+findings.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
