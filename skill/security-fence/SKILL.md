@@ -37,10 +37,10 @@ State the scope you inferred in one line before scanning.
 This is a self-contained analytics audit; do NOT run the local steps.
 ```bash
 python3 "$SKILL_DIR/scripts/scan_github.py" > /tmp/sf_github.json   # add --owner ORG for an org
-python3 "$SKILL_DIR/scripts/build_dashboard.py" /tmp/sf_github.json ./github_security_audit.html
+python3 "$SKILL_DIR/scripts/build_console.py" /tmp/sf_github.json ./github_security_audit.html
 open ./github_security_audit.html
 ```
-`scan_github.py` (read-only `gh` API) pulls per-repo controls — secret scanning, push protection, branch protection, vuln alerts, open Dependabot & secret-scanning alerts, visibility — and emits a posture score, control-coverage, a repository security matrix, and risk-ranked findings. `build_dashboard.py` renders the analytics dashboard (gauge, KPIs, coverage bars, charts, sortable matrix, Fix buttons). If `gh auth status` fails, tell the user to run `gh auth login` and stop. Then report back per Step 4.
+`scan_github.py` (read-only `gh` API) pulls per-repo controls — secret scanning, push protection, branch protection, vuln alerts, open Dependabot & secret-scanning alerts, visibility — and emits a posture score, control-coverage, a repository security matrix, and risk-ranked findings. Two renderers consume that payload (pick to taste): `build_console.py` = dense terminal/security-ops console (default); `build_dashboard.py` = light/dark analytics dashboard. If `gh auth status` fails, tell the user to run `gh auth login` and stop. Then report back per Step 4.
 
 ### Step 0 — refresh guidelines (fast)
 Read `reference/guidelines.md`. Optionally run ONE `WebSearch` for current-year
