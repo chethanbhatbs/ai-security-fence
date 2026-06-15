@@ -222,8 +222,8 @@ def collect(owner, limit):
     gaps = {"branch protection": 0, "vuln alerts": 0, "secret scanning": 0, "push protection": 0}
     keymap = {"branch protection": "branch_protection", "vuln alerts": "vuln_alerts",
               "secret scanning": "secret_scanning", "push protection": "push_protection"}
-    for label, key in keymap.items():
-        gaps[label] = sum(1 for r in active if not r["fork"] and r[key] is False)
+    for glabel, key in keymap.items():
+        gaps[glabel] = sum(1 for r in active if not r["fork"] and r[key] is False)
     today = datetime.date.today()
     buckets = {"< 3 mo": 0, "3-12 mo": 0, "> 12 mo": 0, "unknown": 0}
     for r in repos:

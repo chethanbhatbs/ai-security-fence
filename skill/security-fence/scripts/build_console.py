@@ -129,6 +129,16 @@ def matrix(repos, owner):
 <div class="hint">ss secret-scan · pp push-prot · bp branch-prot · va vuln-alerts · click a group to fold</div>'''
 
 
+def sev_filter_bar(fs):
+    present = [s for s in ["critical", "high", "medium", "low", "info"]
+               if any(f.get("severity") == s for f in fs)]
+    btns = ['<button class="ff on" data-s="all">all</button>']
+    for s in present:
+        btns.append(f'<button class="ff" data-s="{s}">{s} '
+                    f'<span class="ffc">{sum(1 for f in fs if f.get("severity")==s)}</span></button>')
+    return '<div class="filterbar" id="ffbar">' + "".join(btns) + "</div>"
+
+
 def findings_grouped(fs):
     if not fs:
         return '<div class="dim">no findings.</div>'
@@ -153,7 +163,7 @@ def findings_grouped(fs):
 <div class="kv"><span class="kk">evidence</span><code>{e(f.get("evidence",""))}</code></div>
 <button class="fix" data-fix="{e(f.get("fix_prompt",""))}">[ fix with claude ]</button><span class="cp2">copied to clipboard</span>
 </div></div>''')
-        out.append(f'''<div class="fgrp open">
+        out.append(f'''<div class="fgrp open" data-sev="{sev}">
 <div class="fgh" onclick="this.parentElement.classList.toggle('open')">
 <span class="tw">▸</span><span style="color:{bright}">{SEV_MARK.get(sev,'·')} {sev.upper()}</span><span class="gc">{len(grp)}</span></div>
 <div class="fgb">{"".join(items)}</div></div>''')
@@ -186,6 +196,36 @@ def render(src, out):
     panels_grid = '<div class="cols">' + "".join(section(t, hbars(b)) for t, b in mini) + "</div>"
     notes = "".join(f"<div>· {e(x)}</div>" for x in d.get("coverage_notes", []))
     guides = "  ·  ".join(e(g) for g in d.get("guidelines", []))
+
+    # ---- bifurcate into tabbed views with a sticky nav ----
+    score_d = d.get("score", {})
+    gchip = f'{e(score_d.get("grade","?"))} · {e(score_d.get("value",""))}' if score_d else ""
+    posture_sec = ('<section class="sec open"><div class="sh" onclick="this.parentElement.classList.toggle(\'open\')">'
+                   '<span class="tw">▸</span><span class="sl">posture</span></div>'
+                   f'<div class="sb">{posture(score_d)}{stat_line(d.get("kpis",[]))}</div></section>')
+    cov_sec = section("control coverage", coverage(d.get("coverage_bars", []))) if d.get("coverage_bars") else ""
+    overview_html = posture_sec + cov_sec + '<div class="viewhd">analytics</div>' + panels_grid
+    method_html = (f'<div class="foot"><div class="lbl">// methodology</div>{notes}'
+                   f'<div style="margin-top:8px">score = weighted control-coverage, penalised for live secret alerts &amp; open critical/high vulns · {guides}</div>'
+                   '<div style="margin-top:6px">[ fix with claude ] copies a remediation prompt · or run <code>/security-fence fix &lt;ID&gt;</code> · no repo or setting was modified</div></div>')
+
+    views = [("overview", "overview", None, overview_html)]
+    if d.get("repos"):
+        views.append(("repos", "repositories", len(d["repos"]),
+                      '<div class="viewhd">repository security matrix</div>' + matrix(d["repos"], owner)))
+    views.append(("findings", "findings", len(fs), sev_filter_bar(fs) + findings_grouped(fs)))
+    views.append(("method", "methodology", None, method_html))
+
+    tab_btns, view_divs = [], []
+    for i, (vid, lbl, cnt, body) in enumerate(views):
+        on = " on" if i == 0 else ""
+        cnt_html = f' <span class="tc">{cnt}</span>' if cnt is not None else ""
+        tab_btns.append(f'<button class="tab{on}" data-v="{vid}">{e(lbl)}{cnt_html}</button>')
+        view_divs.append(f'<div class="view{on}" id="v-{vid}">{body}</div>')
+    chip_html = f'<span class="chip">{gchip}</span>' if gchip else ""
+    topbar = (f'<div class="topbar"><div class="tbrow"><span class="brand">security-fence</span>{chip_html}'
+              f'<div class="tabs">{"".join(tab_btns)}</div></div></div>')
+    views_html = "".join(view_divs)
 
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(d.get('title','security-fence'))}</title>
@@ -266,8 +306,26 @@ td.x{{text-align:center;font-weight:700}}.x.on{{color:var(--tx)}}.x.off{{color:v
 .fix{{margin-top:12px;background:transparent;border:1px solid var(--accdim);color:var(--acc);border-radius:3px;padding:7px 14px;cursor:pointer;font:inherit}}
 .fix:hover{{background:var(--acc);color:#04070a}}
 .cp2{{margin-left:11px;color:var(--acc);font-size:12px;opacity:0;transition:.2s}}.cp2.show{{opacity:1}}
-.foot{{color:var(--faint);font-size:12px;margin-top:18px;border-top:1px solid var(--line);padding-top:14px}}
+.foot{{color:var(--faint);font-size:12px}}
 .foot .lbl{{color:var(--dim);letter-spacing:1px}}.foot code{{color:var(--acc)}}
+/* sticky nav + tabs */
+.topbar{{position:sticky;top:0;z-index:20;background:rgba(10,12,15,.92);backdrop-filter:blur(6px);
+ border-bottom:1px solid var(--line);margin:0 -20px 0;padding:10px 20px}}
+.tbrow{{display:flex;align-items:center;gap:14px;max-width:1060px;margin:0 auto;flex-wrap:wrap}}
+.brand{{font-weight:700;color:#e9eef3;letter-spacing:.4px}}
+.chip{{border:1px solid var(--accdim);border-radius:3px;padding:1px 8px;font-size:11px;font-weight:700;color:var(--tx)}}
+.tabs{{display:flex;gap:3px;margin-left:auto;flex-wrap:wrap}}
+.tab{{background:transparent;border:1px solid transparent;border-radius:4px;color:var(--dim);
+ padding:6px 12px;cursor:pointer;font:inherit;font-size:12.5px}}
+.tab:hover{{color:var(--tx);background:#11151b}}
+.tab.on{{color:var(--acc);border-color:var(--accdim);background:#0c141d}}
+.tab .tc{{color:var(--faint);margin-left:5px}}.tab.on .tc{{color:var(--acc)}}
+.view{{display:none;animation:fade .15s ease}}.view.on{{display:block}}
+@keyframes fade{{from{{opacity:.4}}to{{opacity:1}}}}
+.viewhd{{color:var(--dim);font-size:11px;letter-spacing:2px;text-transform:uppercase;margin:18px 0 4px}}
+.filterbar{{display:flex;gap:4px;flex-wrap:wrap;margin:14px 0}}
+.ff{{background:#06080b;border:1px solid var(--line);color:var(--dim);border-radius:3px;padding:5px 12px;cursor:pointer;font:inherit;font-size:12px}}
+.ff.on{{border-color:var(--accdim);color:var(--acc)}}.ffc{{color:var(--faint);margin-left:4px}}.ff.on .ffc{{color:var(--acc)}}
 /* responsive */
 @media(max-width:640px){{
   .wrap{{padding:16px 12px 70px}}
@@ -285,30 +343,26 @@ td.x{{text-align:center;font-weight:700}}.x.on{{color:var(--tx)}}.x.off{{color:v
 @media(max-width:380px){{table{{min-width:440px}}.cm .me,.cm .mf{{letter-spacing:-2px}}}}
 </style></head><body><div class="wrap">
 
+{topbar}
+
 <div class="prompt"><span class="u">{e(owner or "user")}@security-fence</span>:~$ <span class="arg">audit {e(subj)} --read-only</span></div>
 <div class="title">{e(d.get('title','security audit'))}</div>
 <div class="sub">{e(', '.join(d.get('scope',[])))} · generated {e(d.get('generated_at',''))} · <b>read-only</b></div>
 
-<section class="sec open"><div class="sh" onclick="this.parentElement.classList.toggle('open')"><span class="tw">▸</span><span class="sl">posture</span></div>
-<div class="sb">{posture(d.get('score',{}))}{stat_line(d.get('kpis',[]))}</div></section>
+{views_html}
 
-{section("control coverage", coverage(d.get('coverage_bars',[]))) if d.get('coverage_bars') else ""}
-
-{panels_grid}
-
-{section("repositories", matrix(d.get('repos',[]), owner), count=len(d.get('repos',[]))) if d.get('repos') else ""}
-
-{section("findings", findings_grouped(fs), count=len(fs))}
-
-<div class="foot">
-  <div class="lbl">// methodology</div>
-  {notes}
-  <div style="margin-top:8px">score = weighted control-coverage, penalised for live secret alerts &amp; open critical/high vulns · {guides}</div>
-  <div style="margin-top:6px">[ fix with claude ] copies a remediation prompt · or run <code>/security-fence fix &lt;ID&gt;</code> · no repo or setting was modified</div>
-  <div style="margin-top:12px"><span class="dim">$</span> <span class="cursor"></span></div>
-</div>
+<div style="margin-top:18px"><span class="dim">$</span> <span class="cursor"></span></div>
 </div>
 <script>
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{{
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+ document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+ t.classList.add('on');document.getElementById('v-'+t.dataset.v).classList.add('on');
+ window.scrollTo({{top:0,behavior:'instant'}});}});
+const ffbar=document.getElementById('ffbar');
+if(ffbar)ffbar.querySelectorAll('.ff').forEach(b=>b.onclick=()=>{{
+ ffbar.querySelectorAll('.ff').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+ const s=b.dataset.s;document.querySelectorAll('.fgrp').forEach(g=>{{g.style.display=(s==='all'||g.dataset.sev===s)?'':'none';}});}});
 function tg(tr){{tr.classList.toggle('open');const g=tr.dataset.g,show=tr.classList.contains('open');
  let n=tr.nextElementSibling;while(n&&!n.classList.contains('grp')){{if(n.dataset.g===g)n.style.display=show?'':'none';n=n.nextElementSibling;}}}}
 const mq=document.getElementById('mq');
