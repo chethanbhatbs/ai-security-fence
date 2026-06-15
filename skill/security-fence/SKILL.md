@@ -72,13 +72,17 @@ Append findings to the JSON for any service the user has connected. Read-only; m
 Merge by appending objects to `findings[]` (keep the schema below) and re-deriving unique IDs. Add a `coverage` line for each service you checked or skipped.
 
 ### Step 3 — render
-For a service/analytics audit (GitHub etc.) use the dashboard renderer
-`build_dashboard.py` (posture gauge, coverage, matrix). For a plain findings list
-from the local/project scan use `build_report.py`:
+`run_scan.py --html` produces the monochrome scanner dashboard directly
+(`build_console.py`: posture score, KPIs, analytics panels — by surface / type /
+most-affected locations — grouped collapsible findings, responsive):
 ```bash
-python3 "$SKILL_DIR/scripts/build_report.py" /tmp/sf_findings.json ./security-fence-report.html
+python3 "$SKILL_DIR/scripts/run_scan.py" --target <DIR> --out /tmp/sf_findings.json --html ./security-fence-report.html
 open ./security-fence-report.html   # or xdg-open on Linux
 ```
+Renderers (all consume the same payload): `build_console.py` = monochrome
+terminal/scanner UI (default, dark + single blue accent, collapsible);
+`build_dashboard.py` = light/dark analytics variant; `build_report.py` = plain
+findings list (legacy).
 
 ### Step 4 — report back (concise)
 Give ONLY: counts by severity, the top 3 Critical/High items (one line each), the

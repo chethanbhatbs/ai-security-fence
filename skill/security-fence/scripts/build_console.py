@@ -77,8 +77,9 @@ def hbars(d):
     mx = max(d.values()) or 1
     rows = []
     for k, v in sorted(d.items(), key=lambda x: -x[1]):
-        rows.append(f'<div class="hb"><span class="hbl">{e(k).lower()}</span>'
-                    f'<span class="hbm">{meter(round(v/mx*100), 14)}</span>'
+        lbl = e(k).lower()
+        rows.append(f'<div class="hb"><span class="hbl" title="{lbl}">{lbl}</span>'
+                    f'<span class="hbm">{meter(round(v/mx*100), 12)}</span>'
                     f'<span class="hbv">{v}</span></div>')
     return "".join(rows)
 
@@ -171,9 +172,18 @@ def render(src, out):
     vis = charts.get("visibility", {})
     vulns = charts.get("vulns_by_severity", {})
     has_vulns = bool(vulns) and sum(vulns.values()) > 0
-    right_title = "vulns by severity" if has_vulns else "findings by severity"
-    right = hbars({k.upper(): v for k, v in (vulns if has_vulns else fcounts).items()})
-    vis_panel = hbars(vis)
+
+    # Build the analytics grid: severity always, visibility if present, plus any
+    # extra panels the scanner injected (works for GitHub and the full local scan).
+    mini = []
+    if vis:
+        mini.append(("repository visibility", vis))
+    mini.append(("vulns by severity" if has_vulns else "findings by severity",
+                 {k.upper(): v for k, v in (vulns if has_vulns else fcounts).items()}))
+    for p in d.get("panels", []):
+        if p.get("bars"):
+            mini.append((p.get("title", ""), p["bars"]))
+    panels_grid = '<div class="cols">' + "".join(section(t, hbars(b)) for t, b in mini) + "</div>"
     notes = "".join(f"<div>· {e(x)}</div>" for x in d.get("coverage_notes", []))
     guides = "  ·  ".join(e(g) for g in d.get("guidelines", []))
 
@@ -218,9 +228,10 @@ a{{color:var(--acc);text-decoration:none}}a:hover{{text-decoration:underline}}
 .cl{{width:220px;color:var(--tx)}}.cm{{letter-spacing:-1px;font-size:12px}}
 .cp{{width:40px;text-align:right;font-weight:700;color:var(--tx)}}.cf{{color:var(--faint)}}
 .lowflag{{color:var(--acc);font-size:11px;border:1px solid var(--accdim);border-radius:3px;padding:0 6px}}
-.cols{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}@media(max-width:720px){{.cols{{grid-template-columns:1fr}}}}
-.hb{{display:flex;align-items:center;gap:12px;margin:8px 0;white-space:nowrap}}
-.hbl{{width:90px;color:var(--dim)}}.hbm{{letter-spacing:-1px;font-size:12px}}.hbv{{font-weight:700;color:var(--tx)}}
+.cols{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}}
+.hb{{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px;margin:8px 0}}
+.hbl{{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.hbm{{letter-spacing:-1px;font-size:12px;white-space:nowrap}}.hbv{{font-weight:700;color:var(--tx);text-align:right;min-width:26px}}
 
 .mbar{{margin:4px 0 12px}}
 #mq{{width:100%;background:#06080b;border:1px solid var(--line);color:var(--tx);border-radius:3px;padding:8px 11px;font:inherit}}
@@ -257,6 +268,21 @@ td.x{{text-align:center;font-weight:700}}.x.on{{color:var(--tx)}}.x.off{{color:v
 .cp2{{margin-left:11px;color:var(--acc);font-size:12px;opacity:0;transition:.2s}}.cp2.show{{opacity:1}}
 .foot{{color:var(--faint);font-size:12px;margin-top:18px;border-top:1px solid var(--line);padding-top:14px}}
 .foot .lbl{{color:var(--dim);letter-spacing:1px}}.foot code{{color:var(--acc)}}
+/* responsive */
+@media(max-width:640px){{
+  .wrap{{padding:16px 12px 70px}}
+  .prompt,.title,.sub{{word-break:break-word}}
+  .title{{font-size:16px}}
+  .posture{{font-size:13px;gap:8px}}.pv{{font-size:19px}}
+  .stats{{gap:6px 16px;font-size:12px}}
+  .cov{{flex-wrap:wrap;gap:4px 10px}}.cl{{width:100%;}}.cm{{order:3}}.cp{{order:2}}.cf{{order:4}}
+  .hb{{gap:8px}}.hbl{{width:78px}}
+  .floc{{display:none}}
+  table{{min-width:520px;font-size:12px}}
+  thead th,tbody td{{padding:7px 8px}}
+  .kv{{flex-direction:column;gap:2px}}.kk{{width:auto}}
+}}
+@media(max-width:380px){{table{{min-width:440px}}.cm .me,.cm .mf{{letter-spacing:-2px}}}}
 </style></head><body><div class="wrap">
 
 <div class="prompt"><span class="u">{e(owner or "user")}@security-fence</span>:~$ <span class="arg">audit {e(subj)} --read-only</span></div>
@@ -266,14 +292,11 @@ td.x{{text-align:center;font-weight:700}}.x.on{{color:var(--tx)}}.x.off{{color:v
 <section class="sec open"><div class="sh" onclick="this.parentElement.classList.toggle('open')"><span class="tw">▸</span><span class="sl">posture</span></div>
 <div class="sb">{posture(d.get('score',{}))}{stat_line(d.get('kpis',[]))}</div></section>
 
-{section("control coverage", coverage(d.get('coverage_bars',[])))}
+{section("control coverage", coverage(d.get('coverage_bars',[]))) if d.get('coverage_bars') else ""}
 
-<div class="cols">
-  {section("repository visibility", vis_panel)}
-  {section(right_title, right)}
-</div>
+{panels_grid}
 
-{section("repositories", matrix(d.get('repos',[]), owner), count=len(d.get('repos',[])))}
+{section("repositories", matrix(d.get('repos',[]), owner), count=len(d.get('repos',[]))) if d.get('repos') else ""}
 
 {section("findings", findings_grouped(fs), count=len(fs))}
 

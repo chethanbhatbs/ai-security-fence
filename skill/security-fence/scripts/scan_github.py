@@ -215,6 +215,32 @@ def collect(owner, limit):
              else "D" if score >= 40 else "F")
     label = {"A": "Strong", "B": "Good", "C": "Needs work", "D": "At risk", "F": "Critical"}[grade]
 
+    # ---- extra analytics panels ----
+    risk_dist = {}
+    for r in repos:
+        risk_dist[r["risk"].upper()] = risk_dist.get(r["risk"].upper(), 0) + 1
+    gaps = {"branch protection": 0, "vuln alerts": 0, "secret scanning": 0, "push protection": 0}
+    keymap = {"branch protection": "branch_protection", "vuln alerts": "vuln_alerts",
+              "secret scanning": "secret_scanning", "push protection": "push_protection"}
+    for label, key in keymap.items():
+        gaps[label] = sum(1 for r in active if not r["fork"] and r[key] is False)
+    today = datetime.date.today()
+    buckets = {"< 3 mo": 0, "3-12 mo": 0, "> 12 mo": 0, "unknown": 0}
+    for r in repos:
+        pa = r.get("pushed_at", "")
+        try:
+            dt = datetime.date.fromisoformat(pa)
+            days = (today - dt).days
+            buckets["< 3 mo" if days <= 92 else "3-12 mo" if days <= 365 else "> 12 mo"] += 1
+        except Exception:
+            buckets["unknown"] += 1
+    buckets = {k: v for k, v in buckets.items() if v}
+    panels = [
+        {"title": "repositories by risk", "bars": risk_dist},
+        {"title": "control gaps (repos missing)", "bars": {k: v for k, v in gaps.items() if v}},
+        {"title": "last push (staleness)", "bars": buckets},
+    ]
+
     kpis = [
         {"label": "Repositories", "value": n},
         {"label": "Public", "value": public, "tone": "warn" if public else "ok"},
@@ -232,6 +258,7 @@ def collect(owner, limit):
         "kpis": kpis,
         "coverage_bars": coverage,
         "charts": {"visibility": vis, "vulns_by_severity": vulns},
+        "panels": panels,
         "repos": sorted(repos, key=lambda r: (SEV_RANK.get(r["risk"], 9), r["name"].lower())),
         "findings": findings,
         "guidelines": ["GitHub security hardening", "OWASP Top 10", "CWE-798",

@@ -68,6 +68,55 @@ def merge(*lists):
     return out
 
 
+def analytics(findings, coverage, target, stamp):
+    """Turn merged findings into the dashboard payload (score, kpis, panels)."""
+    import collections
+    sev = collections.Counter(f.get("severity", "info") for f in findings)
+    surf = collections.Counter(f.get("surface", "Other") for f in findings)
+    types = collections.Counter(f.get("title", "?").replace("Plaintext ", "").replace(" on disk", "")
+                                for f in findings)
+
+    def root(loc):
+        p = loc.split(":")[0].split(";")[0]
+        if p.startswith(("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")) and "locations" in loc:
+            p = loc.split(":", 1)[-1].split(";")[0].strip()
+        parts = p.strip().strip("~/").split("/")
+        return "/".join(parts[:3]) if len(parts) > 3 else "/".join(parts[:-1]) or p
+    dirs = collections.Counter(root(f.get("location", "?")) for f in findings)
+
+    crit, high, med, low = sev["critical"], sev["high"], sev["medium"], sev["low"]
+    score = max(0, min(100, round(100 - 18 * crit - 6 * high - 1 * med - 0.2 * low)))
+    grade = ("A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60
+             else "D" if score >= 40 else "F")
+    label = {"A": "Strong", "B": "Good", "C": "Needs work", "D": "At risk", "F": "Critical"}[grade]
+    secrets = sum(1 for f in findings if f.get("surface") in ("Local", "Secrets"))
+
+    return {
+        "title": "Local & Project Security Audit",
+        "subject": os.path.abspath(os.path.expanduser(target)),
+        "scope": ["Local config & memory", "Project secrets", "Code (SAST)", "Dependencies (SCA)"],
+        "generated_at": stamp,
+        "score": {"value": score, "grade": grade, "label": label},
+        "kpis": [
+            {"label": "Findings", "value": len(findings)},
+            {"label": "Critical", "value": crit, "tone": "bad" if crit else "ok"},
+            {"label": "High", "value": high, "tone": "bad" if high else "ok"},
+            {"label": "Secrets", "value": secrets, "tone": "warn" if secrets else "ok"},
+            {"label": "Surfaces", "value": len(surf)},
+        ],
+        "panels": [
+            {"title": "findings by surface", "bars": dict(surf)},
+            {"title": "findings by type", "bars": dict(types.most_common(8))},
+            {"title": "most-affected locations", "bars": dict(dirs.most_common(8))},
+        ],
+        "coverage": coverage,
+        "coverage_notes": coverage,
+        "guidelines": ["OWASP Top 10", "OWASP LLM Top 10 (LLM06/LLM08)",
+                       "CWE-798 hardcoded credentials", "CWE-312 cleartext storage", "CIS benchmarks"],
+        "findings": findings,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", default=os.getcwd())
@@ -93,24 +142,16 @@ def main():
 
     merged = merge(findings)
     stamp = a.stamp or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    doc = {
-        "generated_at": stamp,
-        "scanned": ["Local config & memory", "Project secrets", "Code (SAST)", "Dependencies (SCA)"],
-        "coverage": coverage,
-        "guidelines": ["OWASP Top 10", "OWASP LLM Top 10 (LLM06/LLM08)",
-                       "CWE-798 hardcoded credentials", "CWE-312 cleartext storage",
-                       "CIS file-permission benchmarks", "12-Factor config/secrets"],
-        "findings": merged,
-    }
+    doc = analytics(merged, coverage, a.target, stamp)
     with open(a.out, "w") as fh:
         json.dump(doc, fh, indent=2)
-    print(f"wrote {a.out}: {len(merged)} findings")
+    print(f"wrote {a.out}: {len(merged)} findings · score {doc['score']['value']}/{doc['score']['grade']}")
     for c in coverage:
         print("  " + c)
 
     if a.html:
-        import build_report
-        build_report.render(a.out, a.html)
+        import build_console
+        build_console.render(a.out, a.html)
         print(f"wrote {a.html}")
 
 
